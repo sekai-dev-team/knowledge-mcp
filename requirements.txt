@@ -5,3 +5,4 @@ sentence-transformers>=3.0.0
 watchdog>=4.0.0
 sqlite-vec>=0.1.0
 pytest>=8.0.0
+pyyaml>=6.0
