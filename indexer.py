@@ -620,18 +620,80 @@ class Indexer:
 
 if __name__ == "__main__":
     import sys
+    import argparse
 
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <db_path> <vault_path> [command]")
-        print("Commands: full_index (default), rebuild, search <query>, status")
-        sys.exit(1)
+    raw_args = sys.argv[1:]
 
-    db_path = sys.argv[1]
-    vault_path = sys.argv[2]
+    # --- Heuristic: detect backward-compatible positional form ---
+    # Positional:  <db_path> <vault_path> [command [args...]]
+    # Flag-based:  --vault PATH --db PATH [--full | subcommand ...]
+    # If --vault or --db appears anywhere, use the argparse form.
+    _is_flag_form = any(
+        a.startswith("--") and a.split("=")[0] in ("--vault", "--db")
+        for a in raw_args
+    )
+
+    if (
+        not _is_flag_form
+        and len(raw_args) >= 2
+        and not raw_args[0].startswith("-")
+        and not raw_args[1].startswith("-")
+    ):
+        # ---- backward-compatible positional form ---------------------------------
+        db_path = raw_args[0]
+        vault_path = raw_args[1]
+        _rest = raw_args[2:]
+
+        command = _rest[0] if _rest else None
+        cmd_query = (
+            _rest[1] if _rest and _rest[0] == "search" and len(_rest) >= 2 else ""
+        )
+        is_full = False
+    else:
+        # ---- standard argparse form -----------------------------------------------
+        # NOTE: command and query are positional args (not subparsers) so that
+        # --vault and --db can appear on either side of the subcommand name
+        # without the parent-parser / required-flag conflicts that subparsers
+        # introduce.
+        _parser = argparse.ArgumentParser(
+            description="Hybrid search indexer for Markdown knowledge bases",
+        )
+        _parser.add_argument("--vault", required=True, help="Path to vault directory")
+        _parser.add_argument("--db", required=True, help="Path to SQLite database file")
+        _parser.add_argument(
+            "--full",
+            action="store_true",
+            help="Perform full index (default)",
+        )
+        _parser.add_argument(
+            "command",
+            nargs="?",
+            choices=["full_index", "rebuild", "search", "status"],
+            default=None,
+            help="Subcommand (default: full_index)",
+        )
+        _parser.add_argument(
+            "query",
+            nargs="?",
+            default="",
+            help="Search query (only used with 'search' subcommand)",
+        )
+
+        _parsed = _parser.parse_args(raw_args)
+        vault_path = _parsed.vault
+        db_path = _parsed.db
+        command = _parsed.command
+        cmd_query = _parsed.query if command == "search" else ""
+        is_full = _parsed.full
+
+    # ------------------------------------------------------------------
+    #  Fallback embed & Indexer instance
+    # ------------------------------------------------------------------
 
     def _fallback_embed(_text: str) -> list[float]:
         """In production, replace with sentence-transformers all-MiniLM-L6-v2."""
         import warnings
+
         warnings.warn(
             "Using fallback zero-vector embedding -- "
             "install sentence-transformers for meaningful vector search"
@@ -640,32 +702,31 @@ if __name__ == "__main__":
 
     indexer = Indexer(db_path, vault_path, _fallback_embed)
 
-    if len(sys.argv) >= 4:
-        cmd = sys.argv[3]
-        if cmd == "rebuild":
-            result = indexer.rebuild()
-        elif cmd == "search" and len(sys.argv) >= 5:
-            query = sys.argv[4]
-            results = indexer.search(query)
-            for r in results:
-                print(f'  [{r["path"]}] {r["section_title"]}')
-                print(f'    Score: {r["combined_score"]:.3f}')
-                if r["snippet"]:
-                    print(f"    {r['snippet']}")
-            sys.exit(0)
-        elif cmd == "status":
-            status = indexer.index_status()
-            print(f"Files: {status['total_files']}, Chunks: {status['total_chunks']}")
-            print(f"DB size: {status['db_size_mb']} MB")
-            print(f"Last indexed: {status['last_indexed']}")
-            sys.exit(0)
-        elif cmd == "full_index":
-            result = indexer.full_index()
-        else:
-            print(f"Unknown command: {cmd}")
-            print("Commands: full_index (default), rebuild, search <query>, status")
-            sys.exit(1)
-    else:
+    # ------------------------------------------------------------------
+    #  Dispatch
+    # ------------------------------------------------------------------
+
+    if command == "rebuild":
+        result = indexer.rebuild()
+    elif command == "search":
+        results = indexer.search(cmd_query or "")
+        for r in results:
+            print(f'  [{r["path"]}] {r["section_title"]}')
+            print(f'    Score: {r["combined_score"]:.3f}')
+            if r["snippet"]:
+                print(f"    {r['snippet']}")
+        sys.exit(0)
+    elif command == "status":
+        status = indexer.index_status()
+        print(f"Files: {status['total_files']}, Chunks: {status['total_chunks']}")
+        print(f"DB size: {status['db_size_mb']} MB")
+        print(f"Last indexed: {status['last_indexed']}")
+        sys.exit(0)
+    elif command in ("full_index", None) or is_full:
         result = indexer.full_index()
+    else:
+        print(f"Unknown command: {command}")
+        print("Commands: full_index (default), rebuild, search <query>, status")
+        sys.exit(1)
 
     print(f"Indexed: {result}")
