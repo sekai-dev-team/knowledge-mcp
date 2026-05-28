@@ -524,8 +524,10 @@ class Indexer:
 
         results = []
         for row in cursor.fetchall():
-            # L2 distance → similarity in [0, 1]
-            similarity = 1.0 / (1.0 + float(row[3]))
+            # L2 distance on unit-normalized vectors → cosine similarity in [0, 1]
+            distance = float(row[3])
+            cos_sim = 1.0 - (distance * distance) / 2.0
+            similarity = max(0.0, cos_sim)
             results.append(
                 {
                     "path": row[1],
@@ -590,7 +592,7 @@ class Indexer:
         ]
 
     def _fts5_snippet(self, conn, path: str, query: str) -> str:
-        """Generate a snippet with ``<mark>`` tags around query terms."""
+        """Generate a snippet with ``[`` ``]`` bracket markers around matches."""
         terms = re.findall(r"\w+", query)
         if not terms:
             return ""
@@ -629,6 +631,11 @@ if __name__ == "__main__":
 
     def _fallback_embed(_text: str) -> list[float]:
         """In production, replace with sentence-transformers all-MiniLM-L6-v2."""
+        import warnings
+        warnings.warn(
+            "Using fallback zero-vector embedding -- "
+            "install sentence-transformers for meaningful vector search"
+        )
         return [0.0] * 384
 
     indexer = Indexer(db_path, vault_path, _fallback_embed)
@@ -648,10 +655,16 @@ if __name__ == "__main__":
             sys.exit(0)
         elif cmd == "status":
             status = indexer.index_status()
-            print(f"Files: {status['files']}, Chunks: {status['chunks']}")
+            print(f"Files: {status['total_files']}, Chunks: {status['total_chunks']}")
+            print(f"DB size: {status['db_size_mb']} MB")
+            print(f"Last indexed: {status['last_indexed']}")
             sys.exit(0)
-        else:
+        elif cmd == "full_index":
             result = indexer.full_index()
+        else:
+            print(f"Unknown command: {cmd}")
+            print("Commands: full_index (default), rebuild, search <query>, status")
+            sys.exit(1)
     else:
         result = indexer.full_index()
 

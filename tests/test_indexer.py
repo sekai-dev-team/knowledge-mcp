@@ -90,3 +90,34 @@ class TestIndexer:
         second = indexer.full_index()
         assert second["new"] == 0
         assert second["skipped"] == 4
+
+    def test_file_modification_triggers_update(self, indexer, vault_path):
+        """Modifying a file should cause 'updated' count on full index."""
+        indexer.full_index()
+
+        # Modify an existing file
+        ml_file = os.path.join(vault_path, "machine-learning.md")
+        original = ""
+        with open(ml_file, "r") as f:
+            original = f.read()
+
+        try:
+            with open(ml_file, "a") as f:
+                f.write("\n\n## New Section\nAdded content for update test.")
+
+            result = indexer.full_index()
+            assert result["updated"] >= 1
+            assert result["skipped"] >= 3
+        finally:
+            with open(ml_file, "w") as f:
+                f.write(original)
+
+    def test_index_status_returns_all_fields(self, indexer):
+        """index_status should return all required fields with valid values."""
+        indexer.full_index()
+
+        status = indexer.index_status()
+        assert status["total_files"] == 4
+        assert status["total_chunks"] == 4
+        assert status["db_size_mb"] > 0
+        assert status["last_indexed"] is not None
