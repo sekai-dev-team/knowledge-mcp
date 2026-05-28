@@ -35,8 +35,8 @@ class TestSearch:
 
         results = indexer.search("supervised learning")
         assert len(results) > 0
-        # At least one result should have a snippet with markers
-        assert any("<mark>" in r["snippet"] for r in results)
+        # At least one result should have a snippet with bracket markers
+        assert any("[" in r["snippet"] and "]" in r["snippet"] for r in results)
 
     def test_search_empty_query(self, indexer):
         """Empty or whitespace-only query returns empty list."""

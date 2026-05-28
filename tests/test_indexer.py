@@ -52,7 +52,7 @@ class TestIndexer:
             assert result["chunks"] == 1
 
             status = indexer.index_status()
-            assert status["files"] == 5  # 4 original + 1 new
+            assert status["total_files"] == 5  # 4 original + 1 new
         finally:
             if os.path.exists(new_file):
                 os.unlink(new_file)
@@ -70,7 +70,7 @@ class TestIndexer:
         """Rebuild should drop old data and recreate the index."""
         indexer.full_index()
         status_before = indexer.index_status()
-        assert status_before["files"] == 4
+        assert status_before["total_files"] == 4
 
         result = indexer.rebuild()
 
@@ -80,7 +80,7 @@ class TestIndexer:
         assert not missing, f"Missing tables after rebuild: {missing}"
 
         status_after = indexer.index_status()
-        assert status_after["files"] == 4
+        assert status_after["total_files"] == 4
 
     def test_change_detection_skips_unchanged(self, indexer):
         """Second full index should skip all unchanged files."""

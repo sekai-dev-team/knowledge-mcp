@@ -79,6 +79,10 @@ class Indexer:
     def _chunk_file(self, filepath: str) -> list[dict]:
         """Split a markdown file into chunks by ``##`` headings.
 
+        Enforces minimum chunk size (500 chars) by merging adjacent small
+        sections, and maximum chunk size (4000 chars) by subdividing
+        oversized sections on paragraph boundaries.
+
         Returns a list of dicts with keys *path* (relative to vault),
         *section_title*, and *content*.
         """
@@ -101,10 +105,10 @@ class Indexer:
             ]
 
         # Split on "## " heading boundaries
-        chunks = []
-        sections = re.split(r"\n(?=## )", content)
+        raw_sections = re.split(r"\n(?=## )", content)
+        sections = []
 
-        for section in sections:
+        for section in raw_sections:
             section = section.strip()
             if not section:
                 continue
@@ -116,7 +120,7 @@ class Indexer:
                     title = m.group(1).strip()
                     break
 
-            chunks.append(
+            sections.append(
                 {
                     "path": relpath,
                     "section_title": title,
@@ -124,7 +128,56 @@ class Indexer:
                 }
             )
 
-        return chunks
+        # Merge adjacent chunks smaller than MIN_CHUNK_SIZE
+        MIN_CHUNK_SIZE = 500
+        merged = []
+        for chunk in sections:
+            if (
+                merged
+                and len(chunk["content"]) < MIN_CHUNK_SIZE
+                and len(merged[-1]["content"]) < MIN_CHUNK_SIZE
+            ):
+                merged[-1]["content"] += "\n\n" + chunk["content"]
+                if not merged[-1]["section_title"] and chunk["section_title"]:
+                    merged[-1]["section_title"] = chunk["section_title"]
+            else:
+                merged.append(chunk)
+        sections = merged
+
+        # Subdivide chunks larger than MAX_CHUNK_SIZE on paragraph boundaries
+        MAX_CHUNK_SIZE = 4000
+        subdivided = []
+        for chunk in sections:
+            if len(chunk["content"]) <= MAX_CHUNK_SIZE:
+                subdivided.append(chunk)
+                continue
+
+            paragraphs = re.split(r"\n\n+", chunk["content"])
+            buffer = ""
+            for para in paragraphs:
+                if len(buffer) + len(para) + 2 > MAX_CHUNK_SIZE and buffer:
+                    subdivided.append(
+                        {
+                            "path": relpath,
+                            "section_title": chunk["section_title"],
+                            "content": buffer.strip(),
+                        }
+                    )
+                    buffer = para
+                else:
+                    if buffer:
+                        buffer += "\n\n"
+                    buffer += para
+            if buffer:
+                subdivided.append(
+                    {
+                        "path": relpath,
+                        "section_title": chunk["section_title"],
+                        "content": buffer.strip(),
+                    }
+                )
+
+        return subdivided
 
     # ------------------------------------------------------------------
     #  Hashing & change detection
@@ -212,7 +265,7 @@ class Indexer:
                 (
                     chunk["path"],
                     chunk["section_title"],
-                    content[:100],
+                    content[:500],
                     fts_rowid,
                     fts_rowid,
                 ),
@@ -385,10 +438,11 @@ class Indexer:
             conn.close()
 
     def index_status(self) -> dict:
-        """Return the current index size.
+        """Return the current index status.
 
         Returns:
-            A dict with keys ``files`` and ``chunks``.
+            A dict with keys ``total_files``, ``total_chunks``,
+            ``db_size_mb``, and ``last_indexed``.
         """
         conn = self._get_connection()
         try:
@@ -400,7 +454,24 @@ class Indexer:
             cursor = conn.execute("SELECT COUNT(*) FROM chunk_map")
             chunk_count = cursor.fetchone()[0]
 
-            return {"files": file_count, "chunks": chunk_count}
+            # Database file size
+            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            db_size_mb = round(page_count * page_size / (1024.0 * 1024.0), 3)
+
+            # Last indexed timestamp
+            cursor = conn.execute(
+                "SELECT MAX(indexed_at) FROM file_hashes"
+            )
+            row = cursor.fetchone()
+            last_indexed = row[0] if row and row[0] else None
+
+            return {
+                "total_files": file_count,
+                "total_chunks": chunk_count,
+                "db_size_mb": db_size_mb,
+                "last_indexed": last_indexed,
+            }
         finally:
             conn.close()
 
@@ -528,7 +599,7 @@ class Indexer:
 
         try:
             cursor = conn.execute(
-                """SELECT snippet(fts_chunks, 2, '<mark>', '</mark>', '...', 40)
+                """SELECT snippet(fts_chunks, 2, '[', ']', '...', 40)
                    FROM fts_chunks
                    WHERE fts_chunks MATCH ?
                      AND path = ?
