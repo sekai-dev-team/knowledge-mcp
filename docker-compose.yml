@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  knowledge-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: knowledge-mcp
+    volumes:
+      - /opt/data/vault:/vault
+      - knowledge_data:/data
+    restart: unless-stopped
+    networks:
+      - hermes-net
+
+  hermes-agent:
+    image: hermes-agent:latest
+    networks:
+      - hermes-net
+    depends_on:
+      - knowledge-mcp
+
+networks:
+  hermes-net:
+    driver: bridge
+
+volumes:
+  knowledge_data:
