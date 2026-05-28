@@ -61,10 +61,10 @@ def test_health_endpoint(configured_app):
 
 
 def test_tools_registered():
-    """All four MCP tools should be registered on the server."""
+    """All six MCP tools should be registered on the server."""
     tools = asyncio.run(handle_list_tools())
     names = {t.name for t in tools}
-    assert names == {"search", "get_note", "reindex", "index_status"}
+    assert names == {"search", "get_note", "reindex", "index_status", "write_note", "update_note"}
 
 
 # ---------------------------------------------------------------------------

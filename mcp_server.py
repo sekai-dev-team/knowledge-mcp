@@ -1,8 +1,8 @@
 """FastAPI + MCP SSE server wrapping Indexer as MCP tools.
 
-Exposes four MCP tools (search, get_note, reindex, index_status) over
-the Model Context Protocol via SSE transport, alongside a FastAPI
-/health endpoint.
+Exposes six MCP tools (search, get_note, reindex, index_status,
+write_note, update_note) over the Model Context Protocol via SSE
+transport, alongside a FastAPI /health endpoint.
 """
 
 import argparse
@@ -102,6 +102,50 @@ async def handle_list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="write_note",
+            description="Create or overwrite a markdown note in the vault",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the vault",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown body content",
+                    },
+                    "frontmatter": {
+                        "type": "object",
+                        "description": "Optional YAML frontmatter key-value pairs",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        Tool(
+            name="update_note",
+            description="Apply a string replacement to an existing note and re-index",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the vault",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Text to be replaced",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        ),
     ]
 
 
@@ -122,6 +166,16 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(_run_reindex(indexer, path)))]
         elif name == "index_status":
             return [TextContent(type="text", text=json.dumps(indexer.index_status()))]
+        elif name == "write_note":
+            path = arguments["path"]
+            content = arguments["content"]
+            frontmatter = arguments.get("frontmatter")
+            return [TextContent(type="text", text=json.dumps(_write_note(indexer, path, content, frontmatter)))]
+        elif name == "update_note":
+            path = arguments["path"]
+            old_string = arguments["old_string"]
+            new_string = arguments["new_string"]
+            return [TextContent(type="text", text=json.dumps(_update_note(indexer, path, old_string, new_string)))]
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
     except Exception as e:
@@ -182,6 +236,50 @@ def _run_reindex(indexer: Indexer, path: str | None = None) -> dict:
             "files_processed": result["total"],
             "elapsed": round(time.time() - start, 3),
         }
+
+
+def _write_note(indexer: Indexer, path: str, content: str, frontmatter: dict | None = None) -> dict:
+    """Create or overwrite a markdown note, then re-index it."""
+    full_path = os.path.join(indexer.vault_path, path)
+
+    # Ensure parent directory exists
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+    if frontmatter:
+        fm_lines = ["---"]
+        for k, v in frontmatter.items():
+            fm_lines.append(f"{k}: {v}")
+        fm_lines.append("---")
+        body = "\n".join(fm_lines) + "\n\n" + content
+    else:
+        body = content
+
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(body)
+
+    indexer.incremental_index(path)
+
+    return {"path": path, "updated": True}
+
+
+def _update_note(indexer: Indexer, path: str, old_string: str, new_string: str) -> dict:
+    """Apply a string replacement to an existing note and re-index."""
+    full_path = os.path.join(indexer.vault_path, path)
+
+    if not os.path.isfile(full_path):
+        return {"error": f"File not found: {path}"}
+
+    with open(full_path, "r", encoding="utf-8") as f:
+        original = f.read()
+
+    updated = original.replace(old_string, new_string)
+
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(updated)
+
+    indexer.incremental_index(path)
+
+    return {"path": path, "updated": True}
 
 
 # ---------------------------------------------------------------------------
