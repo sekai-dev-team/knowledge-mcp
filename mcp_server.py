@@ -1,8 +1,8 @@
 """FastAPI + MCP Streamable HTTP server wrapping Indexer as MCP tools.
 
-Exposes six MCP tools (search, get_note, reindex, index_status,
-write_note, update_note) over the Model Context Protocol via Streamable
-HTTP transport, alongside a FastAPI /health endpoint.
+Exposes seven MCP tools (search, get_note, reindex, index_status,
+write_note, update_note, list_notes) over the Model Context Protocol via
+Streamable HTTP transport, alongside a FastAPI /health endpoint.
 """
 
 import argparse
@@ -149,6 +149,14 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["path", "old_string", "new_string"],
             },
         ),
+        Tool(
+            name="list_notes",
+            description="Return all .md filenames in the vault root directory",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -179,6 +187,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             old_string = arguments["old_string"]
             new_string = arguments["new_string"]
             return [TextContent(type="text", text=json.dumps(_update_note(indexer, path, old_string, new_string)))]
+        elif name == "list_notes":
+            return [TextContent(type="text", text=json.dumps(_list_notes(indexer)))]
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
     except Exception as e:
@@ -241,9 +251,22 @@ def _run_reindex(indexer: Indexer, path: str | None = None) -> dict:
         }
 
 
+def _list_notes(indexer: Indexer) -> list[str]:
+    """Return all .md filenames in the vault root directory."""
+    files = []
+    for f in sorted(os.listdir(indexer.vault_path)):
+        if f.endswith(".md"):
+            files.append(f)
+    return files
+
+
 def _write_note(indexer: Indexer, path: str, content: str, frontmatter: dict | None = None) -> dict:
     """Create or overwrite a markdown note, then re-index it."""
     full_path = os.path.join(indexer.vault_path, path)
+
+    # Reject if file already exists to prevent accidental overwrites
+    if os.path.exists(full_path):
+        return {"error": f"File already exists: {path}. Use update_note to modify."}
 
     # Ensure parent directory exists
     os.makedirs(os.path.dirname(full_path), exist_ok=True)

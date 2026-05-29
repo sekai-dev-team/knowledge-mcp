@@ -64,7 +64,7 @@ def test_tools_registered():
     """All six MCP tools should be registered on the server."""
     tools = asyncio.run(handle_list_tools())
     names = {t.name for t in tools}
-    assert names == {"search", "get_note", "reindex", "index_status", "write_note", "update_note"}
+    assert names == {"search", "get_note", "reindex", "index_status", "write_note", "update_note", "list_notes"}
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def test_get_note_tool_not_found(indexer):
 def test_get_note_returns_wiki_links(indexer):
     """_read_note extracts [[wiki links]] from the note body."""
     indexer.full_index()
-    result = _read_note(indexer, "Projects/architecture.md")
+    result = _read_note(indexer, "architecture.md")
     assert len(result["backlinks"]) == 1
     assert "Machine Learning Fundamentals" in result["backlinks"]
 
