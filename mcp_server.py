@@ -1,11 +1,12 @@
-"""FastAPI + MCP SSE server wrapping Indexer as MCP tools.
+"""FastAPI + MCP Streamable HTTP server wrapping Indexer as MCP tools.
 
 Exposes six MCP tools (search, get_note, reindex, index_status,
-write_note, update_note) over the Model Context Protocol via SSE
-transport, alongside a FastAPI /health endpoint.
+write_note, update_note) over the Model Context Protocol via Streamable
+HTTP transport, alongside a FastAPI /health endpoint.
 """
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -16,20 +17,22 @@ import yaml
 from fastapi import FastAPI
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
-from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent, ServerCapabilities
-from starlette.requests import Request
+from mcp.server.streamable_http import StreamableHTTPServerTransport
+from mcp.types import ServerCapabilities, Tool, TextContent, ToolsCapability
 from starlette.types import ASGIApp, Scope, Receive, Send
 import uvicorn
 
 from indexer import Indexer
 
 # ---------------------------------------------------------------------------
-#  Module-level MCP server and SSE transport
+#  Module-level MCP server and Streamable HTTP transport
 # ---------------------------------------------------------------------------
 
 mcp_server = Server("knowledge-mcp")
-sse_transport = SseServerTransport("/messages/")
+http_transport = StreamableHTTPServerTransport(
+    mcp_session_id=None,
+    is_json_response_enabled=True,
+)
 
 # The Indexer instance is set during the FastAPI lifespan startup.
 _indexer: Indexer | None = None
@@ -283,29 +286,27 @@ def _update_note(indexer: Indexer, path: str, old_string: str, new_string: str) 
 
 
 # ---------------------------------------------------------------------------
-#  ASGI middleware to intercept POST /messages/ for MCP SSE
+#  ASGI middleware to intercept /mcp/ requests for Streamable HTTP
 # ---------------------------------------------------------------------------
 
 
-class SSEPostMiddleware:
-    """Intercepts ``POST /messages/`` and delegates to the SSE transport.
+class MCPHTTPMiddleware:
+    """Intercepts requests at ``/mcp/`` and delegates to the StreamableHTTP transport.
 
-    This is necessary because ``SseServerTransport.handle_post_message``
-    sends the HTTP response itself via the raw ASGI *send* channel, which
-    conflicts with FastAPI's normal response pipeline.
+    The transport handles all HTTP methods (POST for JSON-RPC, GET for SSE,
+    DELETE for session termination) via its ``handle_request`` ASGI interface.
     """
 
-    def __init__(self, app: ASGIApp, transport: SseServerTransport):
+    def __init__(self, app: ASGIApp, transport: StreamableHTTPServerTransport):
         self.app = app
         self.transport = transport
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if (
             scope["type"] == "http"
-            and scope["method"] == "POST"
-            and scope.get("path", "").rstrip("/") == "/messages"
+            and scope.get("path", "").rstrip("/") in ("/mcp", "/mcp/")
         ):
-            await self.transport.handle_post_message(scope, receive, send)
+            await self.transport.handle_request(scope, receive, send)
         else:
             await self.app(scope, receive, send)
 
@@ -317,7 +318,7 @@ class SSEPostMiddleware:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialise the Indexer on startup and store it globally."""
+    """Initialise the Indexer on startup and run the MCP server in background."""
     global _indexer
     _indexer = Indexer(
         db_path=app.state.db_path,
@@ -325,42 +326,40 @@ async def lifespan(app: FastAPI):
         embed_fn=app.state.embed_fn,
     )
     app.state.indexer = _indexer
-    yield
+
+    # Connect the StreamableHTTP transport and run the MCP server loop
+    # in a background task so the FastAPI app can serve requests.
+    async with http_transport.connect() as (read_stream, write_stream):
+        mcp_task = asyncio.create_task(
+            mcp_server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="knowledge-mcp",
+                    server_version="0.1.0",
+                    capabilities=ServerCapabilities(
+                        tools=ToolsCapability(listChanged=False),
+                    ),
+                ),
+            )
+        )
+        try:
+            yield
+        finally:
+            mcp_task.cancel()
+            try:
+                await mcp_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=lifespan, title="Knowledge MCP Server", version="0.1.0")
-app.add_middleware(SSEPostMiddleware, transport=sse_transport)
+app.add_middleware(MCPHTTPMiddleware, transport=http_transport)
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-async def _handle_sse(request: Request):
-    """Shared SSE connection handler for both GET and POST."""
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await mcp_server.run(
-            streams[0],
-            streams[1],
-            InitializationOptions(
-                server_name="knowledge-mcp",
-                server_version="0.1.0",
-                capabilities=ServerCapabilities(),
-            ),
-        )
-
-
-@app.get("/sse")
-async def handle_sse_get(request: Request):
-    return await _handle_sse(request)
-
-
-@app.post("/sse")
-async def handle_sse_post(request: Request):
-    return await _handle_sse(request)
 
 
 # ---------------------------------------------------------------------------
