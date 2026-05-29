@@ -107,7 +107,9 @@ async def handle_list_tools() -> list[Tool]:
         ),
         Tool(
             name="write_note",
-            description="Create or overwrite a markdown note in the vault",
+            description="Create or overwrite a markdown note in the vault. "
+                        "Automatically checks for semantically similar notes "
+                        "before writing unless force=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -122,6 +124,10 @@ async def handle_list_tools() -> list[Tool]:
                     "frontmatter": {
                         "type": "object",
                         "description": "Optional YAML frontmatter key-value pairs",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Skip semantic duplicate check (default false)",
                     },
                 },
                 "required": ["path", "content"],
@@ -181,7 +187,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             path = arguments["path"]
             content = arguments["content"]
             frontmatter = arguments.get("frontmatter")
-            return [TextContent(type="text", text=json.dumps(_write_note(indexer, path, content, frontmatter)))]
+            force = bool(arguments.get("force", False))
+            return [TextContent(type="text", text=json.dumps(_write_note(indexer, path, content, frontmatter, force)))]
         elif name == "update_note":
             path = arguments["path"]
             old_string = arguments["old_string"]
@@ -260,13 +267,57 @@ def _list_notes(indexer: Indexer) -> list[str]:
     return files
 
 
-def _write_note(indexer: Indexer, path: str, content: str, frontmatter: dict | None = None) -> dict:
-    """Create or overwrite a markdown note, then re-index it."""
+def _write_note(
+    indexer: Indexer,
+    path: str,
+    content: str,
+    frontmatter: dict | None = None,
+    force: bool = False,
+) -> dict:
+    """Create or overwrite a markdown note, then re-index it.
+
+    If ``force`` is False (the default) the method first runs a semantic
+    search against *content*.  When the top result's ``vec_score`` exceeds
+    0.85 the note is **not** written — a *duplicate_found* warning with
+    action suggestions is returned instead.  Pass ``force=True`` to skip
+    this check.
+    """
     full_path = os.path.join(indexer.vault_path, path)
 
     # Reject if file already exists to prevent accidental overwrites
     if os.path.exists(full_path):
         return {"error": f"File already exists: {path}. Use update_note to modify."}
+
+    # Semantic duplicate check (skip when force=True)
+    if not force:
+        query = content[:500]
+        results = indexer.search(query, limit=3)
+        if results and results[0].get("vec_score", 0) > 0.85:
+            top = results[0]
+            return {
+                "status": "duplicate_found",
+                "query": query[:200],
+                "similar_note": {
+                    "path": top["path"],
+                    "section_title": top["section_title"],
+                    "snippet": top["snippet"],
+                    "vec_score": top["vec_score"],
+                    "bm25_score": top["bm25_score"],
+                },
+                "suggestion": (
+                    f"A semantically similar note already exists "
+                    f"(vec_score: {top['vec_score']:.3f}).\n"
+                    "Choose one:\n"
+                    "1. MERGE — use update_note() to add the new content "
+                    "to the existing note\n"
+                    "2. SPLIT — if the combined content would be too large "
+                    "(>3000 words), split both into smaller atomic notes "
+                    "and write separately\n"
+                    "3. CREATE — if this represents a genuinely different "
+                    "concept, call write_note() again with force=true to "
+                    "bypass this check"
+                ),
+            }
 
     # Ensure parent directory exists
     os.makedirs(os.path.dirname(full_path), exist_ok=True)

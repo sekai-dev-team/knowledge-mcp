@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from mcp_server import (
     _read_note,
     _run_reindex,
+    _write_note,
     app,
     handle_call_tool,
     handle_list_tools,
@@ -208,3 +209,103 @@ def test_missing_required_argument_returns_error(indexer):
     assert len(result) == 1
     data = json.loads(result[0].text)
     assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+#  write_note tool — semantic dedup
+# ---------------------------------------------------------------------------
+
+
+def test_write_note_no_duplicate(indexer):
+    """Writing a completely new note with no similar content succeeds."""
+    import mcp_server as ms
+
+    ms._indexer = indexer
+    indexer.full_index()
+
+    result = _write_note(
+        indexer,
+        "_tmp_unique_note.md",
+        "This is completely unique content about something different.",
+    )
+    assert result["path"] == "_tmp_unique_note.md"
+    assert result["updated"] is True
+
+    # Clean up
+    os.remove(os.path.join(indexer.vault_path, "_tmp_unique_note.md"))
+
+
+def test_write_note_duplicate_found(tmp_path, mock_embed):
+    """Writing content identical to an existing note returns duplicate warning."""
+    from indexer import Indexer
+    import mcp_server as ms
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    db = tmp_path / "test.db"
+
+    existing_content = (
+        "## Test Section\n\nThis is the content of an existing note."
+    )
+    (vault / "existing.md").write_text(existing_content, encoding="utf-8")
+
+    indexer = Indexer(str(db), str(vault), mock_embed)
+    indexer.full_index()
+    ms._indexer = indexer
+
+    # Try to write a new note with the same content
+    result = _write_note(indexer, "new-note.md", existing_content)
+
+    assert result["status"] == "duplicate_found"
+    assert "query" in result
+    assert result["similar_note"]["path"] == "existing.md"
+    assert result["similar_note"]["vec_score"] > 0.85
+    assert "suggestion" in result
+
+    # Verify the file was NOT written
+    assert not (vault / "new-note.md").exists()
+
+
+def test_write_note_force_bypasses_dedup(tmp_path, mock_embed):
+    """force=True bypasses the semantic dedup check and writes normally."""
+    from indexer import Indexer
+    import mcp_server as ms
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    db = tmp_path / "test.db"
+
+    existing_content = (
+        "## Test Section\n\nThis is the content of an existing note."
+    )
+    (vault / "existing.md").write_text(existing_content, encoding="utf-8")
+
+    indexer = Indexer(str(db), str(vault), mock_embed)
+    indexer.full_index()
+    ms._indexer = indexer
+
+    # With force=True, even identical content should write
+    result = _write_note(
+        indexer, "forced-note.md", existing_content, force=True
+    )
+
+    assert result["path"] == "forced-note.md"
+    assert result["updated"] is True
+    assert (vault / "forced-note.md").exists()
+
+
+def test_write_note_filename_conflict_checked_first(indexer):
+    """Filename conflict error takes priority over dedup check."""
+    import mcp_server as ms
+
+    ms._indexer = indexer
+    indexer.full_index()
+
+    # Try to write to an existing file path
+    result = _write_note(
+        indexer,
+        "machine-learning.md",
+        "Some content that might be a duplicate.",
+    )
+    assert "error" in result
+    assert "already exists" in result["error"]
