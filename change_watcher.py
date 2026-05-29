@@ -54,9 +54,11 @@ class Debounce:
 class VaultEventHandler(FileSystemEventHandler):
     """Handles filesystem events by triggering incremental reindexing."""
 
-    def __init__(self, vault_path: str):
+    def __init__(self, vault_path: str, db_path: str, embed_fn):
         super().__init__()
         self._vault_path = vault_path
+        self._db_path = db_path
+        self._embed_fn = embed_fn
         self._debounce = Debounce(cooldown=2.0)
 
     def _reindex(self, path: str):
@@ -133,7 +135,7 @@ def main():
     from embed import embed
     _embed_fn = embed
 
-    event_handler = VaultEventHandler(_vault_path)
+    event_handler = VaultEventHandler(_vault_path, _db_path, _embed_fn)
     observer = Observer()
     observer.schedule(
         event_handler,
