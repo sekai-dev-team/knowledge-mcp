@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ServerCapabilities
 from starlette.requests import Request
 from starlette.types import ASGIApp, Scope, Receive, Send
 import uvicorn
@@ -348,6 +348,7 @@ async def handle_sse(request: Request):
             InitializationOptions(
                 server_name="knowledge-mcp",
                 server_version="0.1.0",
+                capabilities=ServerCapabilities(),
             ),
         )
 
