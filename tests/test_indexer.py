@@ -121,3 +121,23 @@ class TestIndexer:
         assert status["total_chunks"] == 4
         assert status["db_size_mb"] > 0
         assert status["last_indexed"] is not None
+
+    def test_connection_uses_wal_journal_mode(self, indexer):
+        """Connections should use WAL journal mode to allow concurrent access."""
+        conn = indexer._get_connection()
+        try:
+            cursor = conn.execute("PRAGMA journal_mode")
+            mode = cursor.fetchone()[0]
+            assert mode == "wal", f"Expected 'wal', got '{mode}'"
+        finally:
+            conn.close()
+
+    def test_connection_has_busy_timeout(self, indexer):
+        """Connections should have a busy timeout for concurrent writes."""
+        conn = indexer._get_connection()
+        try:
+            cursor = conn.execute("PRAGMA busy_timeout")
+            timeout = cursor.fetchone()[0]
+            assert timeout >= 5000, f"busy_timeout={timeout} too low"
+        finally:
+            conn.close()

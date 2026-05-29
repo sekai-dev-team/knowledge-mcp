@@ -134,6 +134,31 @@ def test_get_note_returns_wiki_links(indexer):
     assert "Machine Learning Fundamentals" in result["backlinks"]
 
 
+def test_get_note_date_frontmatter_serializes_to_json(indexer):
+    """Date values in frontmatter are serialized as ISO strings through json.dumps.
+
+    Regression test: yaml.safe_load parses ``date: 2025-01-15`` as a
+    ``datetime.date`` object, which would crash json.dumps without the
+    _serialize_value helper.
+    """
+    import json
+    import mcp_server as ms
+
+    ms._indexer = indexer
+    indexer.full_index()
+
+    # Go through handle_call_tool so json.dumps is exercised
+    result = asyncio.run(
+        ms.handle_call_tool("get_note", {"path": "machine-learning.md"})
+    )
+    assert len(result) == 1
+    data = json.loads(result[0].text)
+    assert "error" not in data
+    assert data["path"] == "machine-learning.md"
+    # The date frontmatter should be an ISO string, not a datetime.date
+    assert data["frontmatter"]["date"] == "2025-01-15"
+
+
 # ---------------------------------------------------------------------------
 #  Reindex tool
 # ---------------------------------------------------------------------------

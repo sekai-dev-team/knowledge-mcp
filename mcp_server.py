@@ -7,6 +7,7 @@ Streamable HTTP transport, alongside a FastAPI /health endpoint.
 
 import argparse
 import asyncio
+import datetime
 import json
 import os
 import re
@@ -213,6 +214,23 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 
+def _serialize_value(value):
+    """Recursively convert ``datetime.date`` / ``datetime.datetime`` objects
+    in a mixed structure (dict / list / scalar) to ISO-format strings so the
+    result is JSON-safe.
+
+    ``yaml.safe_load`` parses ``date: 2026-05-29`` as a ``datetime.date``
+    object, which ``json.dumps`` cannot handle natively.
+    """
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_serialize_value(v) for v in value]
+    return value
+
+
 def _read_note(indexer: Indexer, path: str) -> dict:
     """Read a markdown file from the vault, parse frontmatter and wiki links."""
     full_path = os.path.join(indexer.vault_path, path)
@@ -228,6 +246,7 @@ def _read_note(indexer: Indexer, path: str) -> dict:
     if fm_match:
         try:
             frontmatter = yaml.safe_load(fm_match.group(1)) or {}
+            frontmatter = _serialize_value(frontmatter)  # JSON-safe
         except Exception:
             frontmatter = {"_parse_error": True}
         body = content[fm_match.end() :]

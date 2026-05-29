@@ -35,13 +35,21 @@ class Indexer:
     # ------------------------------------------------------------------
 
     def _get_connection(self):
-        """Open a new SQLite connection with the sqlite-vec extension loaded."""
+        """Open a new SQLite connection with the sqlite-vec extension loaded.
+
+        WAL journal mode is enabled so that concurrent readers (search /
+        index_status) do not block writers (incremental_index / rebuild),
+        and a 10-second busy timeout prevents immediate ``database is locked``
+        errors when the change_watcher and the MCP server both need to write.
+        """
         import sqlite3
         import sqlite_vec
 
         conn = sqlite3.connect(self.db_path)
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
         return conn
 
     def _init_schema(self, conn):
