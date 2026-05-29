@@ -10,6 +10,7 @@ import asyncio
 import datetime
 import json
 import os
+import logging
 import re
 import time
 from contextlib import asynccontextmanager
@@ -43,6 +44,35 @@ def _get_indexer() -> Indexer:
     if _indexer is None:
         raise RuntimeError("Indexer not initialized")
     return _indexer
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _retry_on_lock(fn, *args, **kwargs):
+    """Execute *fn*, retrying up to 3 times on transient SQLite lock errors.
+
+    Catches only ``sqlite3.OperationalError`` whose message contains
+    *database is locked*.  Backs off exponentially (1 s, 2 s, 4 s) between
+    attempts and logs a warning on the first failure so the frequency of
+    lock contention can be monitored in production.
+    """
+    import sqlite3
+
+    for attempt in range(4):  # initial + up to 3 retries
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as e:
+            if "database is locked" not in str(e):
+                raise
+            if attempt == 0:
+                _logger.warning(
+                    "Database locked during %s, retrying…", fn.__name__
+                )
+            if attempt < 3:
+                time.sleep(2**attempt)  # 1 s, 2 s, 4 s
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +389,7 @@ def _write_note(
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(body)
 
-    indexer.incremental_index(path)
+    _retry_on_lock(indexer.incremental_index, path)
 
     return {"path": path, "updated": True}
 
@@ -379,7 +409,7 @@ def _update_note(indexer: Indexer, path: str, old_string: str, new_string: str) 
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(updated)
 
-    indexer.incremental_index(path)
+    _retry_on_lock(indexer.incremental_index, path)
 
     return {"path": path, "updated": True}
 
