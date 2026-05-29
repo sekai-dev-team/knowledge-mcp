@@ -19,13 +19,9 @@ RUN curl -fsSL \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the embedding model weights so runtime does not need
-# internet access.  ~80 MB, cached in /root/.cache/fastembed/.
-RUN python -c "\
-from fastembed import TextEmbedding; \
-m = TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2'); \
-list(m.embed('warmup')) \
-"
+# Note: The Qwen3-Embedding-0.6B ONNX model (~625 MB) is downloaded on first
+# use via embed.py and cached in /root/.cache/huggingface/hub/.  It is NOT
+# pre-downloaded here to keep the Docker image size under 1 GB.
 
 WORKDIR /app
 
