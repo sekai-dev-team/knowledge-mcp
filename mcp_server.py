@@ -188,6 +188,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             content = arguments["content"]
             frontmatter = arguments.get("frontmatter")
             force = bool(arguments.get("force", False))
+            # Fallback: allow force via frontmatter (Hermes MCP adapter limitation)
+            if frontmatter and frontmatter.get("force"):
+                force = True
+                # Strip internal key from written frontmatter
+                fm_write = {k: v for k, v in frontmatter.items() if k != "force"}
+                frontmatter = fm_write if fm_write else None
             return [TextContent(type="text", text=json.dumps(_write_note(indexer, path, content, frontmatter, force)))]
         elif name == "update_note":
             path = arguments["path"]
