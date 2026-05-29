@@ -337,8 +337,8 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/sse")
-async def handle_sse(request: Request):
+async def _handle_sse(request: Request):
+    """Shared SSE connection handler for both GET and POST."""
     async with sse_transport.connect_sse(
         request.scope, request.receive, request._send
     ) as streams:
@@ -351,6 +351,16 @@ async def handle_sse(request: Request):
                 capabilities=ServerCapabilities(),
             ),
         )
+
+
+@app.get("/sse")
+async def handle_sse_get(request: Request):
+    return await _handle_sse(request)
+
+
+@app.post("/sse")
+async def handle_sse_post(request: Request):
+    return await _handle_sse(request)
 
 
 # ---------------------------------------------------------------------------
