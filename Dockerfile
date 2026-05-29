@@ -1,19 +1,18 @@
 FROM python:3.12-slim
 
-# Build dependencies for sqlite-vec and sentence-transformers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# sqlite-vec must be installed first so its native extension is available
-RUN pip install --no-cache-dir sqlite-vec
-
-WORKDIR /app
-
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the embedding model weights so runtime does not need
+# internet access.  ~80 MB, cached in /root/.cache/fastembed/.
+RUN python -c "\
+from fastembed import TextEmbedding; \
+m = TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2'); \
+list(m.embed('warmup')) \
+"
+
+WORKDIR /app
 
 # Copy application code
 COPY *.py entrypoint.sh .

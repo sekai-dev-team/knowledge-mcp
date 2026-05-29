@@ -130,8 +130,8 @@ def main():
     _vault_path = args.vault
     _db_path = args.db
 
-    from indexer import fallback_embed
-    _embed_fn = fallback_embed
+    from embed import embed
+    _embed_fn = embed
 
     event_handler = VaultEventHandler(_vault_path)
     observer = Observer()

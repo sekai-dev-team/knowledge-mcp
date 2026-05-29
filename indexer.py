@@ -615,26 +615,6 @@ class Indexer:
 
 
 # ------------------------------------------------------------------
-#  Fallback embedding
-# ------------------------------------------------------------------
-
-
-def fallback_embed(_text: str) -> list[float]:
-    """Zero-vector embedding used when sentence-transformers is unavailable.
-
-    In production the MCP server replaces this with the real
-    all-MiniLM-L6-v2 model loaded at startup.
-    """
-    import warnings
-
-    warnings.warn(
-        "Using fallback zero-vector embedding -- "
-        "install sentence-transformers for meaningful vector search"
-    )
-    return [0.0] * 384
-
-
-# ------------------------------------------------------------------
 #  CLI entry point
 # ------------------------------------------------------------------
 
@@ -707,20 +687,12 @@ if __name__ == "__main__":
         is_full = _parsed.full
 
     # ------------------------------------------------------------------
-    #  Fallback embed & Indexer instance
+    #  Real embedding & Indexer instance
     # ------------------------------------------------------------------
 
-    def _fallback_embed(_text: str) -> list[float]:
-        """In production, replace with sentence-transformers all-MiniLM-L6-v2."""
-        import warnings
+    from embed import embed as _real_embed
 
-        warnings.warn(
-            "Using fallback zero-vector embedding -- "
-            "install sentence-transformers for meaningful vector search"
-        )
-        return [0.0] * 384
-
-    indexer = Indexer(db_path, vault_path, _fallback_embed)
+    indexer = Indexer(db_path, vault_path, _real_embed)
 
     # ------------------------------------------------------------------
     #  Dispatch

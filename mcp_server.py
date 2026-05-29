@@ -357,17 +357,6 @@ async def handle_sse(request: Request):
 # ---------------------------------------------------------------------------
 
 
-def _fallback_embed(_text: str) -> list[float]:
-    """Zero-vector embedding for when sentence-transformers is unavailable."""
-    import warnings
-
-    warnings.warn(
-        "Using fallback zero-vector embedding -- "
-        "install sentence-transformers for meaningful vector search"
-    )
-    return [0.0] * 384
-
-
 def main():
     parser = argparse.ArgumentParser(description="Knowledge MCP Server")
     parser.add_argument("--vault", required=True, help="Path to the markdown vault")
@@ -382,7 +371,9 @@ def main():
 
     app.state.vault_path = args.vault
     app.state.db_path = args.db
-    app.state.embed_fn = _fallback_embed
+    from embed import embed as _real_embed
+
+    app.state.embed_fn = _real_embed
 
     uvicorn.run(app, host=args.host, port=args.port)
 
