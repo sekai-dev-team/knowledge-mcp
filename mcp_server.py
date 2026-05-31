@@ -117,15 +117,28 @@ async def handle_list_tools() -> list[Tool]:
         ),
         Tool(
             name="reindex",
-            description="Rebuild the entire index, or a single file if a path is provided",
+            description="Incrementally scan the vault and index new or changed files. "
+                        "Uses hash-based change detection — unchanged files are skipped. "
+                        "If a path is provided, only that single file is reindexed.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path to a single file to reindex",
+                        "description": "Optional relative path to a single file to reindex. "
+                                       "Omit to scan the entire vault (change-detection aware).",
                     },
                 },
+            },
+        ),
+        Tool(
+            name="rebuild",
+            description="DANGER: Drop all index tables and rebuild from scratch. "
+                        "Use only when the index is corrupted or the embedding model changed. "
+                        "Prefer 'reindex' for normal use.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
             },
         ),
         Tool(
@@ -212,6 +225,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "reindex":
             path = arguments.get("path")
             return [TextContent(type="text", text=json.dumps(_run_reindex(indexer, path)))]
+        elif name == "rebuild":
+            return [TextContent(type="text", text=json.dumps(_run_rebuild(indexer)))]
         elif name == "index_status":
             return [TextContent(type="text", text=json.dumps(indexer.index_status()))]
         elif name == "write_note":
@@ -292,25 +307,44 @@ def _read_note(indexer: Indexer, path: str) -> dict:
 
 
 def _run_reindex(indexer: Indexer, path: str | None = None) -> dict:
-    """Reindex the whole vault (path is None) or a single file."""
+    """Reindex either a single file or scan the whole vault for changes.
+
+    When *path* is None this is a non-destructive incremental scan — hash-based
+    change detection skips files that have not been modified since their last
+    index run.  For a destructive from-scratch rebuild, use :func:`_run_rebuild`.
+    """
     start = time.time()
     if path:
         full_path = os.path.join(indexer.vault_path, path)
         if not os.path.isfile(full_path):
             return {"error": f"File not found in vault: {path}"}
-        indexer.incremental_index(path)
+        _retry_on_lock(indexer.incremental_index, path)
         return {
             "status": "ok",
             "files_processed": 1,
             "elapsed": round(time.time() - start, 3),
         }
     else:
-        result = indexer.rebuild()
+        result = indexer.full_index()
         return {
             "status": "ok",
-            "files_processed": result["total"],
+            "new": result["new"],
+            "updated": result["updated"],
+            "skipped": result["skipped"],
+            "total_scanned": result["total"],
             "elapsed": round(time.time() - start, 3),
         }
+
+
+def _run_rebuild(indexer: Indexer) -> dict:
+    """Drop all index tables and rebuild from scratch (destructive)."""
+    start = time.time()
+    result = indexer.rebuild()
+    return {
+        "status": "ok",
+        "files_processed": result["total"],
+        "elapsed": round(time.time() - start, 3),
+    }
 
 
 def _list_notes(indexer: Indexer) -> list[str]:
@@ -489,6 +523,37 @@ app.add_middleware(MCPHTTPMiddleware, transport=http_transport)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/reindex-file")
+async def reindex_file(body: dict):
+    """Internal endpoint for the change-watcher.
+
+    Accepts ``{"path": "relative/path.md"}`` and triggers incremental
+    indexing inside the MCP server process (reusing the already-loaded
+    ONNX model — no second copy in memory).
+
+    Returns 200 on success, 4xx/5xx on failure.
+    """
+    from fastapi import HTTPException
+
+    indexer = _get_indexer()
+    path = body.get("path")
+    if not path:
+        raise HTTPException(status_code=400, detail="Missing 'path' field")
+
+    full_path = os.path.join(indexer.vault_path, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    try:
+        _retry_on_lock(indexer.incremental_index, path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Reindex failed: {exc}"
+        ) from exc
+
+    return {"status": "ok", "path": path}
 
 
 # ---------------------------------------------------------------------------

@@ -39,10 +39,24 @@ fi
 echo "[entrypoint] Starting Syncthing..."
 syncthing serve --home="$SYNCTHING_HOME" --no-browser &
 
-# Start file change watcher in background
-echo "[entrypoint] Starting change watcher..."
-python change_watcher.py --vault /vault --db /data/index.db --git-sync &
-
-# Start MCP server in foreground
+# Start MCP server in background so we can wait for it to be ready
 echo "[entrypoint] Starting MCP server..."
-exec python mcp_server.py --vault /vault --db /data/index.db --host 0.0.0.0 --port 8000
+python mcp_server.py --vault /vault --db /data/index.db --host 0.0.0.0 --port 8000 &
+MCP_PID=$!
+
+# Wait for MCP server health check
+echo "[entrypoint] Waiting for MCP server to be ready..."
+for i in $(seq 1 30); do
+    if curl -s http://127.0.0.1:8000/health > /dev/null 2>&1; then
+        echo "[entrypoint] MCP server ready."
+        break
+    fi
+    sleep 1
+done
+
+# Start file change watcher (delegates to MCP server via HTTP, no model loaded)
+echo "[entrypoint] Starting change watcher..."
+python change_watcher.py --vault /vault --git-sync &
+
+# Bring MCP server back to foreground
+wait $MCP_PID

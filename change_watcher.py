@@ -1,7 +1,9 @@
 """Watchdog-based file change watcher for the knowledge-mcp vault.
 
-Monitors the vault directory for ``.md`` file changes and triggers
-incremental reindexing via :class:`indexer.Indexer`.
+Monitors the vault directory for ``.md`` file changes and notifies the
+MCP server to perform incremental reindexing via its ``/reindex-file``
+HTTP endpoint.  The watcher itself does NOT load the embedding model —
+all heavy work is delegated to the MCP server process.
 
 Ignores ``.obsidian/``, ``.git/``, and non-``.md`` files.  Debounces
 rapid successive changes to the same path within a 2-second window.
@@ -19,8 +21,6 @@ from datetime import datetime, timezone
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-
-from indexer import Indexer
 
 # ---------------------------------------------------------------------------
 #  Globals set by the CLI
@@ -192,31 +192,54 @@ class GitAutoPush:
 # ---------------------------------------------------------------------------
 
 class VaultEventHandler(FileSystemEventHandler):
-    """Handles filesystem events by triggering incremental reindexing."""
+    """Handles filesystem events by notifying the MCP server to reindex.
 
-    def __init__(self, vault_path: str, db_path: str, embed_fn,
-                 git_sync: GitAutoPush | None = None):
+    Instead of loading the ONNX embedding model itself (which would
+    duplicate ~1.2 GB of memory), this handler POSTs to the MCP server's
+    ``/reindex-file`` endpoint so the work is performed inside the
+    server process where the model is already resident.
+    """
+
+    def __init__(self, vault_path: str,
+                 git_sync: GitAutoPush | None = None,
+                 mcp_url: str = "http://127.0.0.1:8000"):
         super().__init__()
         self._vault_path = vault_path
-        self._db_path = db_path
-        self._embed_fn = embed_fn
         self._debounce = Debounce(cooldown=2.0)
         self._git_sync = git_sync
+        self._mcp_url = mcp_url
+        self._lock = threading.Lock()
 
     def _reindex(self, path: str):
-        """Run incremental indexing on *path* if it is a ``.md`` file
-        inside the watched vault."""
+        """POST *path* to the MCP server's ``/reindex-file`` endpoint.
+
+        Serialised via ``self._lock`` to avoid flooding the server.
+        Failures are logged but never crash the watcher.
+        """
         if not path.endswith(".md"):
             return
         if not self._debounce.should_process(path):
             return
 
-        try:
-            indexer = Indexer(self._db_path, self._vault_path, self._embed_fn)
-            result = indexer.incremental_index(path)
-            print(f"[change_watcher] Reindexed: {result}")
-        except Exception as exc:
-            print(f"[change_watcher] Error reindexing {path}: {exc}")
+        relpath = os.path.relpath(path, self._vault_path)
+
+        with self._lock:
+            try:
+                import urllib.request
+                import json
+
+                payload = json.dumps({"path": relpath}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{self._mcp_url}/reindex-file",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode())
+                    print(f"[change_watcher] Reindexed: {body}")
+            except Exception as exc:
+                print(f"[change_watcher] Error reindexing {relpath}: {exc}")
 
     def _notify_git(self) -> None:
         if self._git_sync:
@@ -264,16 +287,13 @@ def _should_ignore(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def main():
-    global _vault_path, _db_path, _embed_fn
+    global _vault_path
 
     parser = argparse.ArgumentParser(
-        description="Watch a vault directory and reindex changed files"
+        description="Watch a vault directory and notify the MCP server on changes"
     )
     parser.add_argument(
         "--vault", required=True, help="Path to the markdown vault directory"
-    )
-    parser.add_argument(
-        "--db", required=True, help="Path to the SQLite index database"
     )
     parser.add_argument(
         "--git-sync", action="store_true", default=False,
@@ -282,19 +302,13 @@ def main():
     args = parser.parse_args()
 
     _vault_path = args.vault
-    _db_path = args.db
-
-    from embed import embed
-    _embed_fn = embed
 
     git_sync = None
     if args.git_sync:
         git_sync = GitAutoPush(_vault_path, cooldown=60.0)
         git_sync.start()
 
-    event_handler = VaultEventHandler(
-        _vault_path, _db_path, _embed_fn, git_sync=git_sync,
-    )
+    event_handler = VaultEventHandler(_vault_path, git_sync=git_sync)
     observer = Observer()
     observer.schedule(
         event_handler,

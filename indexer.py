@@ -5,10 +5,13 @@ over Markdown knowledge bases.
 """
 
 import hashlib
+import logging
 import os
 import re
 import struct
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class Indexer:
@@ -84,6 +87,45 @@ class Indexer:
     #  File chunking
     # ------------------------------------------------------------------
 
+    #: Absolute maximum characters per chunk.  The chunker enforces this
+    #: via paragraph-boundary splitting + a character-count fallback.
+    #: Embedding a chunk larger than this risks OOM on 2 GB containers.
+    MAX_CHUNK_SIZE = 4000
+
+    #: Hard safety ceiling — if any chunk exceeds this after all splitting
+    #: logic, it is truncated before embedding rather than risking OOM.
+    CHUNK_HARD_LIMIT = 6000
+
+    #: Maximum RSS (in MiB) allowed before an embedding call is refused.
+    #: Set to 80 % of the 2 GB container limit.
+    MEMORY_GUARD_MIB = 1600
+
+    #: Number of files between intermediate commits during ``full_index``.
+    #: Prevents WAL bloat and gives partial durability.
+    FULL_INDEX_COMMIT_EVERY = 20
+
+    @staticmethod
+    def _rss_mib() -> int:
+        """Return the current process RSS in MiB (0 on failure)."""
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) // 1024
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def _check_memory_guard():
+        """Raise ``RuntimeError`` if RSS exceeds the safety threshold."""
+        rss = Indexer._rss_mib()
+        if rss > Indexer.MEMORY_GUARD_MIB:
+            raise RuntimeError(
+                f"Memory guard: RSS {rss} MiB > {Indexer.MEMORY_GUARD_MIB} MiB "
+                f"limit. Aborting to prevent OOM."
+            )
+
     def _chunk_file(self, filepath: str) -> list[dict]:
         """Split a markdown file into chunks by ``##`` headings.
 
@@ -153,17 +195,16 @@ class Indexer:
         sections = merged
 
         # Subdivide chunks larger than MAX_CHUNK_SIZE on paragraph boundaries
-        MAX_CHUNK_SIZE = 4000
         subdivided = []
         for chunk in sections:
-            if len(chunk["content"]) <= MAX_CHUNK_SIZE:
+            if len(chunk["content"]) <= self.MAX_CHUNK_SIZE:
                 subdivided.append(chunk)
                 continue
 
             paragraphs = re.split(r"\n\n+", chunk["content"])
             buffer = ""
             for para in paragraphs:
-                if len(buffer) + len(para) + 2 > MAX_CHUNK_SIZE and buffer:
+                if len(buffer) + len(para) + 2 > self.MAX_CHUNK_SIZE and buffer:
                     subdivided.append(
                         {
                             "path": relpath,
@@ -177,13 +218,27 @@ class Indexer:
                         buffer += "\n\n"
                     buffer += para
             if buffer:
-                subdivided.append(
-                    {
-                        "path": relpath,
-                        "section_title": chunk["section_title"],
-                        "content": buffer.strip(),
-                    }
-                )
+                # Fallback: if a single paragraph still exceeds MAX_CHUNK_SIZE,
+                # split it by character count to prevent OOM during embedding.
+                if len(buffer) > self.MAX_CHUNK_SIZE:
+                    for j in range(0, len(buffer), self.MAX_CHUNK_SIZE):
+                        sub = buffer[j : j + self.MAX_CHUNK_SIZE].strip()
+                        if sub:
+                            subdivided.append(
+                                {
+                                    "path": relpath,
+                                    "section_title": chunk["section_title"],
+                                    "content": sub,
+                                }
+                            )
+                else:
+                    subdivided.append(
+                        {
+                            "path": relpath,
+                            "section_title": chunk["section_title"],
+                            "content": buffer.strip(),
+                        }
+                    )
 
         return subdivided
 
@@ -243,11 +298,30 @@ class Indexer:
         """Index the chunks of *filepath*.
 
         Returns the number of chunks indexed.
+
+        HARDENING:
+          - Chunks exceeding ``CHUNK_HARD_LIMIT`` are truncated before embedding.
+          - A memory guard is checked before each embedding call; if RSS exceeds
+            ``MEMORY_GUARD_MIB`` the operation is aborted with a clear error.
         """
         chunks = self._chunk_file(filepath)
 
         for chunk in chunks:
             content = chunk["content"]
+
+            # --- Safety: hard-limit chunk truncation ---
+            if len(content) > self.CHUNK_HARD_LIMIT:
+                logger.warning(
+                    "Truncating chunk from %d to %d chars (path=%s, section=%s)",
+                    len(content),
+                    self.CHUNK_HARD_LIMIT,
+                    chunk["path"],
+                    chunk["section_title"],
+                )
+                content = content[: self.CHUNK_HARD_LIMIT]
+
+            # --- Memory guard ---
+            self._check_memory_guard()
 
             # --- FTS5 ---
             cursor = conn.execute(
@@ -288,6 +362,10 @@ class Indexer:
     def full_index(self) -> dict:
         """Index all ``.md`` files in the vault.
 
+        Periodically commits every ``FULL_INDEX_COMMIT_EVERY`` files to
+        keep the WAL manageable and provide partial durability.  A final
+        commit is always issued.
+
         Returns:
             A dict with keys ``new``, ``updated``, ``skipped``, ``total``,
             and ``time`` (seconds).
@@ -298,6 +376,7 @@ class Indexer:
             self._init_schema(conn)
 
             stats = {"new": 0, "updated": 0, "skipped": 0, "total": 0}
+            file_count = 0
 
             for root, dirs, files in os.walk(self.vault_path):
                 # Skip hidden directories and .obsidian
@@ -342,7 +421,20 @@ class Indexer:
                         else:
                             stats["new"] += 1
 
-            conn.commit()
+                    # --- Periodic commit to bound WAL size ---
+                    file_count += 1
+                    if file_count % self.FULL_INDEX_COMMIT_EVERY == 0:
+                        conn.commit()
+                        logger.debug(
+                            "full_index intermediate commit at %d files "
+                            "(new=%d updated=%d skipped=%d)",
+                            file_count,
+                            stats["new"],
+                            stats["updated"],
+                            stats["skipped"],
+                        )
+
+            conn.commit()  # final commit
 
             return {
                 "new": stats["new"],
