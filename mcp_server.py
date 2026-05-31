@@ -39,6 +39,11 @@ http_transport = StreamableHTTPServerTransport(
 # The Indexer instance is set during the FastAPI lifespan startup.
 _indexer: Indexer | None = None
 
+# Serialises access to the ONNX embedding model + SQLite database so that
+# concurrent /reindex-file requests (from change_watcher) don't contend for
+# shared resources and time out.  Also used by MCP tool calls for reindex.
+_reindex_lock = asyncio.Lock()
+
 
 def _get_indexer() -> Indexer:
     if _indexer is None:
@@ -224,9 +229,21 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(_read_note(indexer, path)))]
         elif name == "reindex":
             path = arguments.get("path")
-            return [TextContent(type="text", text=json.dumps(_run_reindex(indexer, path)))]
+            if path:
+                # Single-file reindex is fast; keep synchronous but serialised
+                async with _reindex_lock:
+                    result = await asyncio.to_thread(_run_reindex, indexer, path)
+            else:
+                # Full vault scan — offload to thread pool to avoid blocking
+                # the MCP event loop and triggering ClosedResourceError
+                async with _reindex_lock:
+                    result = await asyncio.to_thread(_run_reindex, indexer, None)
+            return [TextContent(type="text", text=json.dumps(result))]
         elif name == "rebuild":
-            return [TextContent(type="text", text=json.dumps(_run_rebuild(indexer)))]
+            # Destructive rebuild — offload to thread pool
+            async with _reindex_lock:
+                result = await asyncio.to_thread(_run_rebuild, indexer)
+            return [TextContent(type="text", text=json.dumps(result))]
         elif name == "index_status":
             return [TextContent(type="text", text=json.dumps(indexer.index_status()))]
         elif name == "write_note":
@@ -546,12 +563,15 @@ async def reindex_file(body: dict):
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
-    try:
-        _retry_on_lock(indexer.incremental_index, path)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Reindex failed: {exc}"
-        ) from exc
+    async with _reindex_lock:
+        try:
+            # Offload blocking incremental_index to a thread so the
+            # FastAPI event loop stays responsive under concurrent requests.
+            await asyncio.to_thread(_retry_on_lock, indexer.incremental_index, path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Reindex failed: {exc}"
+            ) from exc
 
     return {"status": "ok", "path": path}
 
