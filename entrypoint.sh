@@ -41,7 +41,7 @@ syncthing serve --home="$SYNCTHING_HOME" --no-browser &
 
 # Start file change watcher in background
 echo "[entrypoint] Starting change watcher..."
-python change_watcher.py --vault /vault --db /data/index.db &
+python change_watcher.py --vault /vault --db /data/index.db --git-sync &
 
 # Start MCP server in foreground
 echo "[entrypoint] Starting MCP server..."

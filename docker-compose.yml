@@ -7,8 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: knowledge-mcp
     volumes:
-      - /opt/data/vault:/vault
+      - vault_data:/vault
       - knowledge_data:/data
+      - hf_cache:/root/.cache/huggingface
+      - /opt/data/ssh:/root/.ssh:ro
     restart: unless-stopped
     networks:
       - hermes-net
@@ -25,4 +27,9 @@ networks:
     driver: bridge
 
 volumes:
+  vault_data:
+    external: true
   knowledge_data:
+    external: true
+  hf_cache:
+    external: true

@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 # Install system dependencies: git for backup, ca-certificates for HTTPS
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-    git ca-certificates curl \
+    git ca-certificates curl openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Syncthing (static binary, ~11 MB)
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 WORKDIR /app
 
 # Copy application code
-COPY *.py entrypoint.sh .
+COPY *.py entrypoint.sh ./
 
 RUN chmod +x entrypoint.sh
 
