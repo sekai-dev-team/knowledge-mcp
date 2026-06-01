@@ -1,7 +1,7 @@
 """FastAPI + MCP Streamable HTTP server wrapping Indexer as MCP tools.
 
-Exposes seven MCP tools (search, get_note, reindex, index_status,
-write_note, update_note, list_notes) over the Model Context Protocol via
+Exposes eight MCP tools (search, get_note, reindex, index_status,
+write_note, update_note, list_notes, embed) over the Model Context Protocol via
 Streamable HTTP transport, alongside a FastAPI /health endpoint.
 """
 
@@ -212,6 +212,20 @@ async def handle_list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="embed",
+            description="Generate embedding vector for text",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to embed",
+                    },
+                },
+                "required": ["text"],
+            },
+        ),
     ]
 
 
@@ -265,6 +279,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(_update_note(indexer, path, old_string, new_string)))]
         elif name == "list_notes":
             return [TextContent(type="text", text=json.dumps(_list_notes(indexer)))]
+        elif name == "embed":
+            text = arguments["text"]
+            embedding = indexer.embed_fn(text)
+            return [TextContent(type="text", text=json.dumps(embedding))]
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
     except Exception as e:
