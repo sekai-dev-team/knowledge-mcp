@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Syntax check
+        run: python -m compileall .
+
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
@@ -22,4 +25,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: kona01z/knowledge-mcp:latest
+          tags: |
+            kona01z/knowledge-mcp:latest
+            kona01z/knowledge-mcp:sha-${{ github.sha }}
