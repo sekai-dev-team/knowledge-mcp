@@ -5,7 +5,8 @@ MCP server to perform incremental reindexing via its ``/reindex-file``
 HTTP endpoint.  The watcher itself does NOT load the embedding model —
 all heavy work is delegated to the MCP server process.
 
-Ignores ``.obsidian/``, ``.git/``, and non-``.md`` files.  Debounces
+Ignores ``.obsidian/``, ``.git/``, ``log.md``, ``index.md``, and
+non-``.md`` files.  Debounces
 rapid successive changes to the same path within a 2-second window.
 
 After changes settle (60s debounce), automatically commits and pushes
@@ -218,6 +219,9 @@ class VaultEventHandler(FileSystemEventHandler):
         """
         if not path.endswith(".md"):
             return
+        basename = os.path.basename(path)
+        if basename in IGNORED_FILES:
+            return  # skip operational/derived files
         if not self._debounce.should_process(path):
             return
 
@@ -272,6 +276,9 @@ class VaultEventHandler(FileSystemEventHandler):
 
 #: Directories whose events are ignored by the observer.
 IGNORED_DIRS = frozenset({".obsidian", ".git"})
+
+#: Filenames that should never trigger reindexing (operational/derived files).
+IGNORED_FILES = frozenset({"log.md", "index.md"})
 
 
 def _should_ignore(path: str) -> bool:
