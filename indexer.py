@@ -97,8 +97,8 @@ class Indexer:
     CHUNK_HARD_LIMIT = 6000
 
     #: Maximum RSS (in MiB) allowed before an embedding call is refused.
-    #: Set to 80 % of the 2 GB container limit.
-    MEMORY_GUARD_MIB = 1600
+    #: Defaults to 80 % of a 2 GB container; override with env ``MEMORY_GUARD_MIB``.
+    MEMORY_GUARD_MIB = int(os.environ.get("MEMORY_GUARD_MIB", "1600"))
 
     #: Number of files between intermediate commits during ``full_index``.
     #: Prevents WAL bloat and gives partial durability.
