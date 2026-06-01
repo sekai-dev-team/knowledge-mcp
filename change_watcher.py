@@ -222,6 +222,8 @@ class VaultEventHandler(FileSystemEventHandler):
         basename = os.path.basename(path)
         if basename in IGNORED_FILES:
             return  # skip operational/derived files
+        if _should_ignore(path):
+            return  # skip files in ignored directories (concepts/, insights/, digests/, etc.)
         if not self._debounce.should_process(path):
             return
 
@@ -275,7 +277,10 @@ class VaultEventHandler(FileSystemEventHandler):
 # ---------------------------------------------------------------------------
 
 #: Directories whose events are ignored by the observer.
-IGNORED_DIRS = frozenset({".obsidian", ".git"})
+#: ``concepts/``, ``insights/``, and ``digests/`` contain derived/semantic
+#: content that is already indexed by the MCP write path — the change_watcher
+#: should NOT reindex them to avoid race conditions with the writer's own index.
+IGNORED_DIRS = frozenset({".obsidian", ".git", "concepts", "insights", "digests"})
 
 #: Filenames that should never trigger reindexing (operational/derived files).
 IGNORED_FILES = frozenset({"log.md", "index.md"})
